@@ -1,0 +1,16 @@
+__pycache__/
+.junk/
+*.whl
+*.DS_store
+*.out
+*.sh
+
+# folders
+data/
+config/
+config_lora/
+outputs/
+
+# unnecessary files
+*.ipynb
+test.py
