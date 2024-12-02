@@ -12,7 +12,7 @@ prompt = st.text_area("Enter your prompt here:")
 if st.button("Generate Response"):
     if prompt.strip():
         # 서버 엔드포인트 URL
-        server_url = "http://127.0.0.1:8002/gpt2"
+        server_url = "http://127.0.0.1:8502/gpt2"
         
         # HTTP POST 요청 보내기
         try:

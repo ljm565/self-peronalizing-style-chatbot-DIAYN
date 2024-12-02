@@ -7,10 +7,9 @@ __pycache__/
 
 # folders
 data/
-config/
-config_lora/
 outputs/
 
 # unnecessary files
 *.ipynb
 test.py
+*.pt
