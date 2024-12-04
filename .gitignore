@@ -5,10 +5,6 @@ __pycache__/
 *.out
 *.sh
 
-# folders
-data/
-outputs/
-
 # unnecessary files
 *.ipynb
 test.py
