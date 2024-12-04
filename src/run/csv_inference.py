@@ -23,7 +23,7 @@ if __name__ == '__main__':
 
     # Read csv file and make write csv file
     os.makedirs(os.path.dirname(args.csv_write_path), exist_ok=True)
-    questions = pd.read_csv(args.csv_read_path)['Question'].tolist()
+    questions = pd.read_csv(args.csv_read_path)['prompt'].tolist()
 
     # Initializer model wrapper
     chatter = Chatter(args)
