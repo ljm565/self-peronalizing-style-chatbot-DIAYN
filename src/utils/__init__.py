@@ -10,7 +10,7 @@ from tqdm import tqdm as tqdm_original
 import torch
 
 
-LOGGING_NAME = 'LMM_Tests_1.0'
+LOGGING_NAME = 'Sytle_LM_1.0'
 VERBOSE = True
 RANK = int(os.getenv('RANK', -1))
 MACOS, LINUX, WINDOWS = (platform.system() == x for x in ['Darwin', 'Linux', 'Windows'])  # environment booleans
@@ -217,9 +217,7 @@ def check_version(current: str = '0.0.0',
     return result
 
 
-
 TORCH_2_0 = check_version(torch.__version__, '2.0.0')
-
 
 
 class TQDM(tqdm_original):
@@ -239,32 +237,13 @@ class TQDM(tqdm_original):
         super().__init__(*args, **kwargs)
 
 
-def log_if_rank_zero(func):
-    def wrapper(self, *args, **kwargs):
-        if self.is_rank_zero:
-            return func(self, *args, **kwargs)
-    return wrapper
-
-
-@log_if_rank_zero
-def print_mem_consumption(self, path):
+def print_mem_consumption(path):
     mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
     LOGGER.info(f'{colorstr(path)} accounts for {colorstr(mem)} of GPU memory.')
 
 
-@log_if_rank_zero
-def logger(self, message):
-    LOGGER.info(colorstr(message))
-
-
 ########################## MSG ##########################
-DATASET_HELP_MSG = 'If you are looking for LLM benchmark datasets, you can choose from the following list: [gsm8k, ai2_arc, Rowan/hellaswag, winogrande, lukaemon/mmlu, truthful_qa]'
-OPTIM_CRITERION_MSG = 'optimizer_step_criterion must be belonged to' + f' [{colorstr("epoch")}, {colorstr("step")}] '
 SCHEDULER_MSG = 'scheduler_type must be belonged to' + f' [{colorstr("linear")}, {colorstr("cosine")}] '
-FSDP_WRAP_MSG = 'wrap_policy must be belonged to' + f' [{colorstr("size_based")}, {colorstr("transformer_based")}] '
-
 
 ##################### Assertion List #####################
-OPTIM_CRITERION = ['epoch', 'step']
 SCHEDULER_TYPE = ['linear', 'cosine']
-FSDP_WRAP_TYPE = ['size_based', 'transformer_based']

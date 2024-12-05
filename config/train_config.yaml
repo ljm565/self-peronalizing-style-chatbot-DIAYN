@@ -1,0 +1,23 @@
+# base
+seed: 0
+deterministic: True
+
+# environment config
+device: [1]     # examples: [0], [0,1], [1,2,3], cpu, mps... 
+
+# project config
+project: outputs/gpt2
+name: style_dpo_01
+
+# model config
+pretrained_model: gpt2
+max_len: 128
+
+# data config
+workers: 0                      # Don't worry to set worker. The number of workers will be set automatically according to the batch size.
+data_dir: data/dpo_data
+
+# train config
+batch_size: 60
+epochs: 3
+lr0: 1e-5

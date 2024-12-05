@@ -1,48 +1,33 @@
 import os
-import json
 import pickle
 from pathlib import Path
 
 from utils import LOGGER, colorstr
 
 
-def find_parent_dir(path: str, n=1):
-    for _ in range(n):
-        path = os.path.abspath(os.path.dirname(path))
-    return path
 
-
-def pickle_load(path: str):
+def read_dataset(path):
     with open(path, 'rb') as f:
-        return pickle.load(f)    
+        data = pickle.load(f)
+    return data
 
 
-def pickle_save(path: str, data):
+def write_dataset(path, obj):
     with open(path, 'wb') as f:
-        pickle.dump(data, f)
+        pickle.dump(obj, f)
 
 
-def txt_load(path: str):
+def txt_read(path):
     with open(path, 'r') as f:
         lines = f.readlines()
-    lines = [line.strip() for line in lines]
+    lines = [l.strip() for l in lines]
     return lines
 
 
-def txt_save(path: str, data):
+def txt_write(path, data):
     with open(path, 'w') as f:
-        f.write(data)
-
-
-def json_load(path: str):
-    with open(path, 'r') as f:
-        return json.load(f)
-
-
-def json_save(path: str, data):
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-
+        f.writelines(data)
+        
 
 def make_project_dir(config, is_rank_zero=False):
     """
@@ -84,9 +69,8 @@ def yaml_save(file='data.yaml', data=None, header=''):
     Returns:
         (None): Data is saved to the specified file.
     """
-
     save_path = Path(file)
     print(data.dumps())
     with open(save_path, "w") as f:
         f.write(data.dumps(modified_color=None, quote_str=True))
-        print(f"Config is saved at {save_path}")
+        LOGGER.info(f"Config is saved at {save_path}")

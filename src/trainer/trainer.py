@@ -1,24 +1,19 @@
 import gc
 import time
 import math
-import transformers
+import random
 
 import torch
 import torch.nn as nn
-from torch.cuda import amp
 import torch.optim as optim
 from torch import distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 
-from tools import ModelEMA, Evaluator, TrainingLogger
-from utils import RANK, LOGGER, colorstr, init_seeds, TQDM
-from utils.func_utils import *
+from tools.tokenizers import *
+from trainer.build import get_model, get_data_loader, get_tokenizers
+from utils import RANK, LOGGER, SCHEDULER_MSG, SCHEDULER_TYPE, colorstr, init_seeds
+from utils.filesys_utils import *
 from utils.training_utils import *
-from utils.filesys_utils import yaml_save, make_project_dir
-from trainer.build import get_data_loader, get_model, get_peft_model, get_wrapped_model
 
-
-__version__ = '0.0.1'
 
 
 
@@ -28,46 +23,33 @@ class Trainer:
             config,
             mode: str,
             device,
-            multi_gpu_train_type=False,
-            use_huggingface_trainer=False,
+            is_ddp=False,
             resume_path=None,
         ):
-        self.is_ddp, self.is_fsdp = select_training_type(multi_gpu_train_type)
         init_seeds(config.seed + 1 + RANK, config.deterministic)
 
         # init
         self.mode = mode
         self.is_training_mode = self.mode in ['train', 'resume']
         self.device = torch.device(device)
-        self.is_rank_zero = True if not multi_gpu_train_type or (multi_gpu_train_type and device == 0) else False
+        self.is_ddp = is_ddp
+        self.is_rank_zero = True if not self.is_ddp or (self.is_ddp and device == 0) else False
         self.config = config
-        self.world_size = len(self.config.device) if multi_gpu_train_type else 1
-        self.amp = True if self.config.amp_training or self.config.load_unnecessary_half else False
-        self.ema = self.config.ema_updating
-        self.epochs = self.config.epochs
-        self.steps = self.config.steps
-        self.optimizer_step_criterion = self.config.optimizer_step_criterion
-        self.scheduler_type = self.config.scheduler_type
-        self.metrics = self.config.metrics
+        self.world_size = len(self.config.device) if self.is_ddp else 1
         if self.is_training_mode:
             self.save_dir = make_project_dir(self.config, self.is_rank_zero)
             self.wdir = self.save_dir / 'weights'
-        else:
-            config.is_training_mode = False
-            config.data_verbose = False
-            if self.config.fast_validation_n == 'None': 
-                self.config.fast_validation_n = None
-            if self.config.fast_validation_step_interval == 'None': 
-                self.config.fast_validation_step_interval = None
-        self.config.is_rank_zero = self.is_rank_zero
-        self.loss_names = ['cross_entropy']
-        self.train_verbose = self.config.train_verbose
-        self.use_huggingface_trainer = use_huggingface_trainer
-        self.resume_path = resume_path
 
-        # sanity check
-        sanity_check(self)
-        self.is_update_per_epoch = True if self.optimizer_step_criterion == 'epoch' else False
+        # path, data params
+        self.config.is_rank_zero = self.is_rank_zero
+        self.resume_path = resume_path
+        self.max_len = self.config.max_len
+
+        # init tokenizer, model, dataset, dataloader, etc.
+        self.modes = ['train', 'validation'] if self.is_training_mode else ['train', 'validation', 'test']
+        self.tokenizer = get_tokenizers(self.config)
+        self.dataloaders = get_data_loader(self.config, self.tokenizer, self.modes, self.is_ddp)
+        self.model = self._init_model(self.config, self.tokenizer, self.mode)
 
         # save the yaml config
         if self.is_rank_zero and self.is_training_mode:
@@ -75,40 +57,33 @@ class Trainer:
             self.config.save_dir = str(self.save_dir)
             yaml_save(self.save_dir / 'args.yaml', self.config)  # save run args
         
-        # init model, dataset, dataloader, etc.
-        self.modes = ['train', 'validation'] if self.is_training_mode else ['validation']
-        self.model, self.tokenizer = self._init_model(self.config, self.mode)
-        self.model_module = self.model.module if self.is_ddp else self.model
-        self.evaluator = Evaluator(self.tokenizer)
-        self.training_logger = TrainingLogger(self.config, self.is_training_mode)
-        self.dataloaders = get_data_loader(self.config, self.tokenizer, self.modes, self.is_ddp or self.is_fsdp)
-        if self.use_huggingface_trainer:
-            self.do_train = self.huggingface_trainer
-            return 
-        
-        # init optimizer, scheduler
+        # init criterion, optimizer, etc.
+        self.steps = self.config.steps
+        self.lr0 = self.config.lr0
+        self.lrf = self.config.lrf
+        self.epochs = math.ceil(self.steps / len(self.dataloaders['train'])) if self.is_training_mode else 1
+        self.criterion = nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
         if self.is_training_mode:
-            self.lr0 = self.config.lr0
-            self.scaler = amp.GradScaler(enabled=self.amp) if self.amp else None
-            self.ema = ModelEMA(self.model_module) if self.ema else None
-            self.start_epoch = 0
-            self.optimizer = optim.AdamW(self.model.parameters(), lr=self.lr0, betas=(self.config.momentum, 0.999), weight_decay=self.config.weight_decay)
-            all_steps_n = self.epochs if self.is_update_per_epoch else self.steps
-            self.warmup_steps_n = max(0, self.config.warmup_epochs if self.is_update_per_epoch else self.config.warmup_steps)
+            self.optimizer = optim.Adam(self.model.parameters(), lr=self.config.lr0)
+
+            # init scheduler
+            self.warmup_steps_n = max(0, self.config.warmup_steps)
             if self.scheduler_type == 'cosine':
-                self.lf = one_cycle(1, self.config.lrf, all_steps_n)
+                self.lf = one_cycle(1, self.lrf, self.steps)
             elif self.scheduler_type == 'linear':
-                self.lf = lambda x: (1 - (x - self.warmup_steps_n) / (all_steps_n - self.warmup_steps_n)) * (1.0 - self.config.lrf) + self.config.lrf
+                self.lf = lambda x: (1 - (x - self.warmup_steps_n) / (self.steps - self.warmup_steps_n)) * (1.0 - self.lrf) + self.lrf
             self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=self.lf)
-            self.scheduler.last_epoch = self.start_epoch - 1  # do not move
-            if self.is_rank_zero and self.train_verbose:
-                draw_training_lr_curve(self.config, self.lf, all_steps_n, self.warmup_steps_n, self.is_ddp or self.is_fsdp, self.world_size)
-            self.stop = False
+            if self.is_rank_zero:
+                draw_training_lr_curve(self.config, self.lf, self.steps, self.warmup_steps_n, self.is_ddp, self.world_size)
 
 
-    def _init_model(self, config, mode):
+    def _init_model(self, config, tokenizer, mode):
         def _resume_model(resume_path, device, is_rank_zero):
-            checkpoints = torch.load(resume_path, map_location=device)
+            try:
+                checkpoints = torch.load(resume_path, map_location=device)
+            except RuntimeError:
+                LOGGER.warning(colorstr('yellow', 'cannot be loaded to MPS, loaded to CPU'))
+                checkpoints = torch.load(resume_path, map_location=torch.device('cpu'))
             model.load_state_dict(checkpoints['model'])
             del checkpoints
             torch.cuda.empty_cache()
@@ -117,89 +92,31 @@ class Trainer:
                 LOGGER.info(f'Resumed model: {colorstr(resume_path)}')
             return model
 
-        # init model, loss function, and tokenizer
-        resume_success = False
+        # init models
         do_resume = mode == 'resume' or (mode == 'validation' and self.resume_path)
-        model, tokenizer = get_model(config, self.device)
-        model._init_criterion()
+        model = get_model(config, tokenizer, self.device)
 
-        # init peft
-        if config.peft_config_path:
-            if config.training_stage != 0:
-                if config.is_rank_zero:
-                    LOGGER.info(f'PEFT is not applied due to training stage.')
-            else:
-                # resume before applying peft
-                if do_resume:
-                    try:
-                        model = _resume_model(self.resume_path, self.device, config.is_rank_zero)
-                        resume_success = True
-                    except:
-                        pass
-                model = get_peft_model(model, config)
-        else:
-            if config.is_rank_zero:
-                LOGGER.info(f'PEFT is not applied.')
-
-        # resume model or resume model after applying peft
-        if do_resume and not resume_success:
+        # resume model
+        if do_resume:
             model = _resume_model(self.resume_path, self.device, config.is_rank_zero)
 
         # init ddp
         if self.is_ddp:
-            model = DDP(model, device_ids=[self.device])
-        elif self.is_fsdp:
-            model = get_wrapped_model(config, model, self.device)
-
-        return model, tokenizer    
-    
-
-    def _freeze_model(self):
-        if self.config.training_stage:
-            # Firstly, changing model dtype
-            if self.model_module.load16bit:
-                self.model.half()
-            else:
-                self.model.float()
-            
-            # Secondly, freezing layer except for that need to be trained 
-            self.model_module.freeze_layers(self.config.training_stage)
-
-            # Lastly, changing layers dtype those have to be float32
-            if self.model_module.load16bit:
-                self.model_module.mapping_neccessary_32bit()
-
-
-    def optimizer_step(self, step, is_last_step=False):
-        """Perform a single step of the training optimizer with gradient clipping and EMA update."""
-        if (step + 1) % self.config.gradient_accumuate_step == 0 or is_last_step:
-            if self.amp:
-                self.scaler.unscale_(self.optimizer)  # unscale gradients
-                nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
-                self.optimizer.step()
-
-            self.optimizer.zero_grad()
-
-            if self.ema:
-                self.ema.update(self.model_module)
-            
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[self.device])
         
-    def do_train(self) -> None:
-        self.train_time_start = time.time()
+        return model
+
+
+    def do_train(self):
         self.train_cur_step = -1
-        if not self.is_update_per_epoch:
-            self.epochs = math.ceil(self.steps / len(self.dataloaders['train']))
+        self.train_time_start = time.time()
         
         if self.is_rank_zero:
-            LOGGER.info(f'Using {self.dataloaders["train"].num_workers * (self.world_size or 1)} dataloader workers\n'
+            LOGGER.info(f'\nUsing {self.dataloaders["train"].num_workers * (self.world_size or 1)} dataloader workers\n'
                         f"Logging results to {colorstr('bold', self.save_dir)}\n"
                         f'Starting training for {self.epochs} epochs...\n')
-
-        if self.is_ddp or self.is_fsdp:
+        
+        if self.is_ddp:
             dist.barrier()
 
         for epoch in range(self.epochs):
@@ -207,21 +124,21 @@ class Trainer:
             self.epoch = epoch
 
             if self.is_rank_zero:
-                print('-'*100)
+                LOGGER.info('-'*100)
 
             for phase in self.modes:
                 if self.is_rank_zero:
-                    print('Phase: {}'.format(phase))
+                    LOGGER.info('Phase: {}'.format(phase))
 
                 if phase == 'train':
                     self.epoch_train(phase, epoch)
-                    if self.is_ddp or self.is_fsdp:
+                    if self.is_ddp:
                         dist.barrier()
                 else:
                     self.epoch_validate(phase, epoch)
-                    if self.is_ddp or self.is_fsdp:
+                    if self.is_ddp:
                         dist.barrier()
-
+            
             # clears GPU vRAM at end of epoch, can help with out of memory errors
             torch.cuda.empty_cache()
             gc.collect()
@@ -235,250 +152,210 @@ class Trainer:
             
             if self.stop:
                 break  # must break all DDP ranks
-            
+
             if self.is_rank_zero:
-                print(f"\nepoch {epoch+1} time: {time.time() - start} s\n")
-                print('\n'*2)
+                LOGGER.info(f"\nepoch {epoch+1} time: {time.time() - start} s\n\n\n")
 
         if RANK in (-1, 0) and self.is_rank_zero:
-            LOGGER.info(f'\n{epoch - self.start_epoch + 1} epochs completed in '
+            LOGGER.info(f'\n{epoch + 1} epochs completed in '
                         f'{(time.time() - self.train_time_start) / 3600:.3f} hours.')
             
 
-    def epoch_train(self, 
-                    phase: str,
-                    epoch: int
+    def epoch_train(
+            self,
+            phase: str,
+            epoch: int
         ):
         self.model.train()
         train_loader = self.dataloaders[phase]
         nb = len(train_loader)
-        validation_step_interval = int(self.config.validation_step_interval_prop * nb)
-        
-        if self.is_ddp or self.is_fsdp:
+
+        if self.is_ddp:
             train_loader.sampler.set_epoch(epoch)
 
         # init progress bar
         if RANK in (-1, 0):
-            pbar = init_train_progress_bar(train_loader, self.is_rank_zero, self.loss_names, nb)
-    
-        # training loop
-        self.optimizer.zero_grad()
-        for i, batch in pbar:
+            logging_header = ['CE Loss', 'lr']
+            pbar = init_progress_bar(train_loader, self.is_rank_zero, logging_header, nb)
+
+        for i, (x, y, _, _) in pbar:
             # Warmup
             self.train_cur_step += 1
-            warmup_step_or_epoch = epoch if self.is_update_per_epoch else self.train_cur_step
-            if warmup_step_or_epoch <= self.warmup_steps_n:
-                self.optimizer.param_groups[0]['lr'] = lr_warmup(warmup_step_or_epoch, self.warmup_steps_n, self.lr0, self.lf)
+            if self.train_cur_step <= self.warmup_steps_n:
+                self.optimizer.param_groups[0]['lr'] = lr_warmup(self.train_cur_step, self.warmup_steps_n, self.lr0, self.lf)
             cur_lr = self.optimizer.param_groups[0]['lr']
             
-            with torch.cuda.amp.autocast(self.amp):
-                batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                batch_size = batch['src'].size(0)   # src is always present whether the model is seq2seq or not
-                _, loss = self.model(batch, return_loss=True)
-                loss = loss / self.config.gradient_accumuate_step
+            batch_size = x.size(0)
+            x, y = x.to(self.device), y.to(self.device)
             
-            # backward and optimizer step
-            self.scaler.scale(loss).backward() if self.amp else loss.backward()
-            self.optimizer_step(i, is_last_step=i-1 == nb)
-            if not self.is_update_per_epoch:
-                self.scheduler.step()
-
-            # logging if update criterion is step
-            self.training_logger.update(
-                phase, 
-                epoch+1, 
-                self.train_cur_step, 
-                batch_size, 
-                **{'train_loss': loss.item() * self.config.gradient_accumuate_step, 'lr': cur_lr}
-            )
-            if RANK in (-1, 0) and self.is_rank_zero:
-                mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                loss_log = [loss.item() * self.config.gradient_accumuate_step]
-                msg = tuple([f'{epoch + 1}/{self.epochs}', mem] + loss_log)
-                pbar.set_description(('%15s' * 2 + '%15.4g' * len(loss_log)) % msg)
-                
-            # break if step is over when the update criterion is step
-            if not self.is_update_per_epoch and self.train_cur_step == self.steps:
-                break
-
-            # validataion
-            if self.train_cur_step != 0 and self.train_cur_step % validation_step_interval == 0 and self.config.validation_step_interval_prop != 1:
-                self.epoch_validate('validation', epoch)
-                self.model.train()
-                if self.is_ddp or self.is_fsdp:
-                    dist.barrier()
-        
-        # upadate logs
-        if RANK in (-1, 0) and self.is_rank_zero:
-            self.training_logger.update_phase_end(phase, printing=True)
-        
-        # scheduler step if update criterion is epoch
-        if self.is_update_per_epoch:
+            self.optimizer.zero_grad()
+            output = self.model(x)
+            
+            # masked label training
+            if self.train_cur_step / self.steps >= self.config.train_user_turn_mask_step:
+                loss = self.criterion(output[:, :-1, :].reshape(-1, output.size(-1)), y[:, 1:].reshape(-1))
+            else:
+                loss = self.criterion(output[:, :-1, :].reshape(-1, output.size(-1)), x[:, 1:].reshape(-1))
+            
+            loss.backward()
+            self.optimizer.step()
             self.scheduler.step()
 
-    
-    def epoch_validate(self,
-                       phase: str,
-                       epoch: int,
-                       is_training_now=True
-        ):
-        def _init_headline():
-            header = tuple(['Epoch', 'GPU_mem'] + self.loss_names + self.metrics)
-            LOGGER.info(('\n' + '%15s' * (2 + len(self.loss_names) + len(self.metrics))) % header)
-
-        def _get_val_pbar(dloader, nb, is_rank_zero):
-            if is_rank_zero:
-                _init_headline()
-                return TQDM(enumerate(dloader), total=nb)
-            return enumerate(dloader)
-
-        with torch.no_grad():
-            val_loader = self.dataloaders[phase]
-            nb = len(val_loader)
-            pbar = _get_val_pbar(val_loader, nb, self.is_rank_zero)
-
-            if (self.config.fast_validation_step_interval or self.config.fast_validation_n) and is_training_now:
-                val_loader.sampler.set_epoch(epoch)
-
-            model = self.ema.ema or self.model if self.ema else self.model
-            model = model.half() if self.config.half_inference else model.float()
-            model.eval()
-
-            if self.config.half_inference and self.is_rank_zero:
-                LOGGER.warning(colorstr('yellow', 'Half inference started, yet we recommend using mixed precision.'))
-
-            # validation loop
-            for i, batch in pbar:
-                if self.config.fast_validation_step_interval and i % self.config.fast_validation_step_interval != 0:
-                    continue                    
-                
-                with torch.cuda.amp.autocast(self.amp):
-                    batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                    batch_size = batch['src'].size(0)   # src is always present whether the model is seq2seq or not
-                    _, loss = self.model(batch, return_loss=True)
-
-                    # preparing for model evaluation
-                    inference_batch_size = min(batch_size, self.config.fast_validation_n) if self.config.fast_validation_n else batch_size
-                    user_prompt = batch['user_prompt'][:inference_batch_size] if 'user_prompt' in batch else batch['src'][:inference_batch_size]
-                    response_gt = batch['response'][:inference_batch_size] if 'response' in batch else None
-                    response_pred = self.model_module.inference(user_prompt, max_length=self.config.max_length, num_return_sequences=1, greedy=True) if response_gt else None                    
-
-                # evaluation
-                metric_results = self.metric_evaluation(loss, response_pred, response_gt)
+            if self.is_rank_zero:
                 self.training_logger.update(
                     phase, 
-                    epoch, 
-                    self.train_cur_step if is_training_now else 0, 
-                    inference_batch_size, 
-                    **{'validation_loss': loss.item()}, 
-                    **metric_results
+                    epoch + 1,
+                    self.train_cur_step,
+                    batch_size, 
+                    **{'train_loss': loss.item(), 'lr': cur_lr},
                 )
-
-                # logging
-                if self.is_rank_zero:
-                    mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                    loss_log = [loss.item()]
-                    msg = tuple([f'{epoch+1}/{self.epochs}', mem] + loss_log + [metric_results[k] for k in self.metrics])
-                    if self.config.inference_result_verbose and response_gt != None:
-                        _init_headline()
-                    pbar.set_description(('%15s' * 2 + '%15.4g' * (len(loss_log) + len(self.metrics))) % msg)
-
-                    if self.config.inference_result_verbose and response_gt != None:
-                        for u, p, g in zip(user_prompt, response_pred, response_gt):
-                            LOGGER.info('\n\n' + '-'*100)
-                            LOGGER.info(colorstr('Prompt    : ') + u)
-                            LOGGER.info(colorstr('Prediction: ') + p)
-                            LOGGER.info(colorstr('GT        : ') + g)
-                            LOGGER.info('-'*100 + '\n')
-
-            # upadate logs and save model
-            self.training_logger.update_phase_end(phase, printing=self.is_rank_zero)
-
-            # gather and broadcast the results of all ranks. It works only at DDP and FSDP.
-            self.collect_all_ranks(nb)
-
-            # save checkpoint
-            self.save_model(is_training_now)
-
-    
-    def collect_all_ranks(self, nb):
-        if self.is_ddp or self.is_fsdp:
-            dist.barrier()
-            gathered_results = None
-            obj = {'results': self.training_logger.validation_epoch_result, 'length': nb}
-            gathered_list = gather_objects(obj, self.is_rank_zero, self.world_size)
+                loss_log = [loss.item(), cur_lr]
+                msg = tuple([f'{epoch + 1}/{self.epochs}'] + loss_log)
+                pbar.set_description(('%15s' * 1 + '%15.4g' * len(loss_log)) % msg)
             
+        # upadate logs
+        if self.is_rank_zero:
+            self.training_logger.update_phase_end(phase, printing=True)
+        
+        
+    def epoch_validate(
+            self,
+            phase: str,
+            epoch: int,
+            is_training_now=True
+        ):
+        def _init_log_data_for_vis():
+            data4vis = {'trg': [], 'pred': []}
+            return data4vis
+
+        def _append_data_for_vis(**kwargs):
+            for k, v in kwargs.items():
+                if isinstance(v, list):
+                    self.data4vis[k].extend(v)
+                else: 
+                    self.data4vis[k].append(v)
+
+        with torch.no_grad():
             if self.is_rank_zero:
-                for i, tmp in enumerate(gathered_list):
-                    LOGGER.info(colorstr('green', f'Rank{i}: {tmp}'))
-                gathered_results = calculate_gathered_results(gathered_list)
-            
-            dist.barrier()
-            gathered_results = broadcast_objects(gathered_results, self.is_rank_zero)
-            self.training_logger.validation_epoch_result = gathered_results
+                if not is_training_now:
+                    self.data4vis = _init_log_data_for_vis()
+
+                val_loader = self.dataloaders[phase]
+                nb = len(val_loader)
+                logging_header = ['CE Loss'] + self.config.metrics
+                pbar = init_progress_bar(val_loader, self.is_rank_zero, logging_header, nb)
+
+                self.model.eval()
+
+                for i, (x, y, fs, fsl) in pbar:
+                    batch_size = x.size(0)
+                    x, y, fs = x.to(self.device), y.to(self.device), fs.to(self.device)
+
+                    targets4metrics = [self.tokenizer.decode(t.tolist()) for t in x]
+
+                    model = self.model.module if self.is_ddp else self.model
+                    predictions, loss = model.batch_inference(
+                        src=x,
+                        start_tokens=(fs, fsl),
+                        max_len=self.max_len,
+                        tokenizer=self.tokenizer,
+                        loss_func=self.criterion,
+                        target=y
+                    )
+                
+                    metric_results = self.metric_evaluation(loss, predictions, targets4metrics)
+
+                    self.training_logger.update(
+                        phase, 
+                        epoch, 
+                        self.train_cur_step if is_training_now else 0, 
+                        batch_size, 
+                        **{'validation_loss': loss.item()},
+                        **metric_results
+                    )
+
+                    # logging
+                    loss_log = [loss.item()]
+                    msg = tuple([f'{epoch+1}/{self.epochs}'] + loss_log + [metric_results[k] for k in self.metrics])
+                    pbar.set_description(('%15s' + '%15.4g' * (len(loss_log) + len(self.metrics))) % msg)
+
+                    ids = random.sample(range(batch_size), min(self.config.prediction_print_n, batch_size))
+                    for id in ids:
+                        print_samples(targets4metrics[id], predictions[id])
+
+                    if not is_training_now:
+                        _append_data_for_vis(
+                            **{'trg': targets4metrics,
+                               'pred': predictions}
+                        )
+
+                # upadate logs and save model
+                self.training_logger.update_phase_end(phase, printing=True)
+                if is_training_now:
+                    self.training_logger.save_model(self.wdir, model)
+                    self.training_logger.save_logs(self.save_dir)
+
+                    high_fitness = self.training_logger.model_manager.best_higher
+                    low_fitness = self.training_logger.model_manager.best_lower
+                    self.stop = self.stopper(epoch + 1, high=high_fitness, low=low_fitness)
 
     
-    def save_model(self, is_training_now):
-        if is_training_now:
-            self.training_logger.save_model(self.wdir, self.model_module, self.is_rank_zero, self.is_fsdp)
-            self.training_logger.save_logs(self.save_dir, self.is_rank_zero)
-
-            # re-freezing model for training phase
-            self._freeze_model()
-
-
     def metric_evaluation(self, loss, response_pred, response_gt):
         metric_results = {k: 0 for k in self.metrics}
         for m in self.metrics:
             if m == 'ppl':
                 metric_results[m] = self.evaluator.cal_ppl(loss.item())
-            elif m == 'bleu':
-                metric_results[m] = self.evaluator.cal_bleu_score(response_pred, response_gt)
-            elif m == 'rouge':
-                try:
-                    metric_results[m] = self.evaluator.cal_rouge_score(response_pred, response_gt, n=None)
-                except RecursionError:
-                    LOGGER.warning(colorstr('yellow', f'Recursion error occured.\nPreds: {response_pred}\nGTs: {response_gt}'))
-                    metric_results[m] = 0.0
-            elif m == 'meteor':
-                metric_results[m] = self.evaluator.cal_meteor_score(response_pred, response_gt)
-            elif m == 'edit_distance':
-                metric_results[m] = self.evaluator.cal_edit_distance(response_pred, response_gt)
+            elif m == 'bleu2':
+                metric_results[m] = self.evaluator.cal_bleu_score(response_pred, response_gt, n=2)
+            elif m == 'bleu4':
+                metric_results[m] = self.evaluator.cal_bleu_score(response_pred, response_gt, n=4)
+            elif m == 'nist2':
+                metric_results[m] = self.evaluator.cal_nist_score(response_pred, response_gt, n=2)
+            elif m == 'nist4':
+                metric_results[m] = self.evaluator.cal_nist_score(response_pred, response_gt, n=4)
             else:
                 LOGGER.warning(f'{colorstr("red", "Invalid key")}: {m}')
         
         return metric_results
     
+    
+    def chatting(self, query: str, is_first_query=False):
+        def _preprocess(query, is_first_query, query_cache=None):
+            if is_first_query:
+                query = [self.tokenizer.cls_token_id] + self.tokenizer.encode(query) + [self.tokenizer.sep_token_id]
+                query_cache = torch.tensor(query, dtype=torch.long).unsqueeze(0).to(self.device)
+            else:
+                query = self.tokenizer.encode(query) + [self.tokenizer.sep_token_id]
+                query_cache = torch.cat([query_cache, torch.tensor(query, dtype=torch.long).unsqueeze(0).to(self.device)], dim=1)
+            return query_cache
+            
+        self.query_cache = None if is_first_query else self.query_cache
+        self.query_cache = _preprocess(query, is_first_query, self.query_cache)
+        query_done = False
+        is_first_query = False
 
-    def huggingface_trainer(self):
-        import pandas as pd
-        from datasets import Dataset, DatasetDict
-        from data_collection import huggingface_arc_generator
-        from transformers import DataCollatorForLanguageModeling, TrainingArguments
+        answer = []
+        while 1:
+            output = self.model(self.query_cache)
+            pred_token = torch.argmax(output[:, -1], dim=-1)
+            answer.append(pred_token.item())
+            self.query_cache = torch.cat((self.query_cache, pred_token.unsqueeze(1)), dim=1)
+
+            if pred_token == self.tokenizer.sep_token_id:
+                answer.pop()
+                break
+            elif pred_token == self.tokenizer.eos_token_id:
+                answer.pop()
+                query_done = True
+                break
+            
+            if self.query_cache.size(1) >= self.max_len:
+                query_done = True
+                break
+            
+            if query_done:
+                self.query_cache = None
+                is_first_query = True
         
-        datasets = DatasetDict({k: Dataset.from_pandas(pd.DataFrame(data=v.dataset.data)) for k, v in self.dataloaders.items()})
-        templates = self.dataloaders['train'].dataset.templates
-        responses = self.dataloaders['train'].dataset.responses
-        instructions = self.dataloaders['train'].dataset.instructions
-
-        fn_kwargs={"templates": templates, "responses": responses, "instructions":instructions, "tokenizer": self.tokenizer.tokenizer}
-        datasets = {k: v.shuffle().map(huggingface_arc_generator, batched=False, fn_kwargs=fn_kwargs) if k == 'train' else v.map(huggingface_arc_generator, batched=False, fn_kwargs=fn_kwargs) for k, v in datasets.items()}
-        
-        trainer = transformers.Trainer(
-            model=self.model_module.model,
-            train_dataset=datasets['train'],
-            eval_dataset=datasets['validation'] if 'validation' in datasets else None,
-            args=TrainingArguments(
-                per_device_train_batch_size=self.config.batch_size,
-                gradient_accumulation_steps=1,
-                warmup_steps=self.config.warmup_steps,
-                max_steps=self.steps,
-                learning_rate=self.config.lr0,
-                fp16=self.amp,
-                logging_steps=1,
-                output_dir='outputs'
-            ),
-            data_collator=DataCollatorForLanguageModeling(self.tokenizer.tokenizer, mlm=False)
-        )
-
-        trainer.train()
+        answer = self.tokenizer.decode(answer)
+        return self.query_cache, answer, query_done, is_first_query
