@@ -9,15 +9,16 @@ import torch.optim as optim
 from torch import distributed as dist
 
 from tools.tokenizers import *
+from trainer.loss import DPOLoss
 from trainer.build import get_model, get_data_loader, get_tokenizers
-from utils import RANK, LOGGER, SCHEDULER_MSG, SCHEDULER_TYPE, colorstr, init_seeds
+from utils import RANK, LOGGER, colorstr, init_seeds
 from utils.filesys_utils import *
 from utils.training_utils import *
 
 
 
 
-class Trainer:
+class DPOTrainer:
     def __init__(
             self, 
             config,
@@ -49,7 +50,7 @@ class Trainer:
         self.modes = ['train', 'validation'] if self.is_training_mode else ['train', 'validation', 'test']
         self.tokenizer = get_tokenizers(self.config)
         self.dataloaders = get_data_loader(self.config, self.tokenizer, self.modes, self.is_ddp)
-        self.model = self._init_model(self.config, self.tokenizer, self.mode)
+        self.model, self.ref_model = self._init_model(self.config, self.tokenizer, self.mode)
 
         # save the yaml config
         if self.is_rank_zero and self.is_training_mode:
@@ -58,23 +59,10 @@ class Trainer:
             yaml_save(self.save_dir / 'args.yaml', self.config)  # save run args
         
         # init criterion, optimizer, etc.
-        self.steps = self.config.steps
-        self.lr0 = self.config.lr0
-        self.lrf = self.config.lrf
-        self.epochs = math.ceil(self.steps / len(self.dataloaders['train'])) if self.is_training_mode else 1
-        self.criterion = nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
+        self.epochs = self.config.epochs
+        self.criterion = DPOLoss(self.config.beta)
         if self.is_training_mode:
             self.optimizer = optim.Adam(self.model.parameters(), lr=self.config.lr0)
-
-            # init scheduler
-            self.warmup_steps_n = max(0, self.config.warmup_steps)
-            if self.scheduler_type == 'cosine':
-                self.lf = one_cycle(1, self.lrf, self.steps)
-            elif self.scheduler_type == 'linear':
-                self.lf = lambda x: (1 - (x - self.warmup_steps_n) / (self.steps - self.warmup_steps_n)) * (1.0 - self.lrf) + self.lrf
-            self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=self.lf)
-            if self.is_rank_zero:
-                draw_training_lr_curve(self.config, self.lf, self.steps, self.warmup_steps_n, self.is_ddp, self.world_size)
 
 
     def _init_model(self, config, tokenizer, mode):
@@ -95,16 +83,19 @@ class Trainer:
         # init models
         do_resume = mode == 'resume' or (mode == 'validation' and self.resume_path)
         model = get_model(config, tokenizer, self.device)
+        ref_model = get_model(config, tokenizer, self.device)
 
         # resume model
         if do_resume:
             model = _resume_model(self.resume_path, self.device, config.is_rank_zero)
+            ref_model = _resume_model(self.resume_path, self.device, config.is_rank_zero)
 
         # init ddp
         if self.is_ddp:
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[self.device])
+            ref_model = torch.nn.parallel.DistributedDataParallel(ref_model, device_ids=[self.device])
         
-        return model
+        return model, ref_model
 
 
     def do_train(self):
@@ -167,6 +158,8 @@ class Trainer:
             epoch: int
         ):
         self.model.train()
+        self.ref_model.eval()
+        
         train_loader = self.dataloaders[phase]
         nb = len(train_loader)
 
@@ -175,48 +168,36 @@ class Trainer:
 
         # init progress bar
         if RANK in (-1, 0):
-            logging_header = ['CE Loss', 'lr']
+            logging_header = ['DPO Loss', 'Preferred log prob.', 'Non-preferred log prob.', 'Rewards', 'Reward margin']
             pbar = init_progress_bar(train_loader, self.is_rank_zero, logging_header, nb)
 
-        for i, (x, y, _, _) in pbar:
-            # Warmup
-            self.train_cur_step += 1
-            if self.train_cur_step <= self.warmup_steps_n:
-                self.optimizer.param_groups[0]['lr'] = lr_warmup(self.train_cur_step, self.warmup_steps_n, self.lr0, self.lf)
-            cur_lr = self.optimizer.param_groups[0]['lr']
-            
-            batch_size = x.size(0)
-            x, y = x.to(self.device), y.to(self.device)
+        for i, batch in pbar:
+            preferred_prompt, nonpreferred_prompt, style_id = batch['preferred_prompt'], batch['nonpreferred_prompt'], batch['style_id']
+            batch_size = style_id.size(0)
+            preferred_prompt, nonpreferred_prompt, style_id = preferred_prompt.to(self.device), nonpreferred_prompt.to(self.device), style_id.to(self.device)
             
             self.optimizer.zero_grad()
-            output = self.model(x)
+            model_preferred_logits, model_nonpreferred_logits = self.model(preferred_prompt), self.model(nonpreferred_prompt)
+            ref_preferred_logits, ref_nonpreferred_logits = self.ref_model(preferred_prompt), self.ref_model(nonpreferred_prompt)
             
             # masked label training
-            if self.train_cur_step / self.steps >= self.config.train_user_turn_mask_step:
-                loss = self.criterion(output[:, :-1, :].reshape(-1, output.size(-1)), y[:, 1:].reshape(-1))
-            else:
-                loss = self.criterion(output[:, :-1, :].reshape(-1, output.size(-1)), x[:, 1:].reshape(-1))
+            loss, preferred_log_prob, nonpreferred_log_prob, reward_acc, reward_margins = self.criterion(
+                preferred_token=preferred_prompt,
+                nonpreferred_token=nonpreferred_prompt,
+                model_preferred_logits=model_preferred_logits,
+                model_pnonreferred_logits=model_nonpreferred_logits,
+                ref_preferred_logits=ref_preferred_logits,
+                ref_nonpreferred_logits=ref_nonpreferred_logits,
+            )
             
             loss.backward()
             self.optimizer.step()
-            self.scheduler.step()
 
             if self.is_rank_zero:
-                self.training_logger.update(
-                    phase, 
-                    epoch + 1,
-                    self.train_cur_step,
-                    batch_size, 
-                    **{'train_loss': loss.item(), 'lr': cur_lr},
-                )
-                loss_log = [loss.item(), cur_lr]
+                loss_log = [loss.item(), preferred_log_prob.item(), nonpreferred_log_prob.item(), reward_acc.item(), reward_margins.item()]
                 msg = tuple([f'{epoch + 1}/{self.epochs}'] + loss_log)
                 pbar.set_description(('%15s' * 1 + '%15.4g' * len(loss_log)) % msg)
             
-        # upadate logs
-        if self.is_rank_zero:
-            self.training_logger.update_phase_end(phase, printing=True)
-        
         
     def epoch_validate(
             self,

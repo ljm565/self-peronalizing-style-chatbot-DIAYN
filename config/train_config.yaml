@@ -21,3 +21,4 @@ data_dir: data/dpo_data
 batch_size: 60
 epochs: 3
 lr0: 1e-5
+beta: 0.1

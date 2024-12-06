@@ -6,7 +6,7 @@ sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 
 import torch
 
-from trainer import Trainer
+from trainer import DPOTrainer
 from utils import colorstr
 from utils.training_utils import choose_proper_resume_model
 
@@ -46,7 +46,7 @@ def single_gpu_train(args, config):
     else:
         device = torch.device('cpu') if config.device == 'cpu' else torch.device(f'cuda:{config.device[0]}')
     
-    trainer = Trainer(
+    trainer = DPOTrainer(
         config, 
         args.mode, 
         device, 
@@ -62,7 +62,7 @@ def multi_gpu_train(gpu, ngpus_per_node, config, args):
     torch.distributed.init_process_group(backend='nccl', init_method=f'tcp://127.0.0.1:{args.port}', world_size=ngpus_per_node, rank=gpu)
     torch.cuda.set_device(gpu)
     torch.distributed.barrier()
-    trainer = Trainer(
+    trainer = DPOTrainer(
         config,
         args.mode,
         gpu,
@@ -79,8 +79,8 @@ def multi_gpu_train(gpu, ngpus_per_node, config, args):
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('-c', '--config', type=str, required=False)
-    parser.add_argument('-m', '--mode', type=str, required=True, choices=['train', 'resume'])
-    parser.add_argument('-r', '--resume_model_dir', type=str, required=False)
+    parser.add_argument('-m', '--mode', type=str, required=True, choices=['resume'])
+    parser.add_argument('-r', '--resume_model_dir', type=str, required=True)
     parser.add_argument('-l', '--load_model_type', type=str, default='metric', required=False, choices=['loss', 'last', 'metric'])
     parser.add_argument('-p', '--port', type=str, default='10001', required=False)
     args = parser.parse_args()
