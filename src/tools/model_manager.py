@@ -5,13 +5,16 @@ class ModelManager:
     def __init__(self):
         self.is_init = True
         self.lower_candidates_weights = {
-            'validation_loss': 1,
-            'ppl': 0,   # same as validation_loss
+            'validation_loss': 0.7,
+            'vl_non_preferred_log_prob': 0.3
         }
         self.higher_candidates_weights = {
-            'bleu2': 0.1,
-            'nist2': 0.1,
-            'bleu4': 0.6,
+            'vl_preferrsed_log_prob': 0.2,
+            'vl_reward': 0.2,
+            'vl_reward_margin': 0.2,
+            'bleu2': 0.0,
+            'bleu4': 0.2,
+            'nist2': 0.0,
             'nist4': 0.2,
         }
 

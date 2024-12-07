@@ -41,6 +41,7 @@ class DLoader(Dataset):
 
 
     def __getitem__(self, idx):
+        prompt, preferred_response = self.data[idx]['prompt'], self.data[idx]['preferred_response']
         preferred_prompt, nonpreferred_prompt, style_id = self.make_data(self.data[idx])
         # preferred_prompt_mask, nonpreferred_prompt_mask = [1] * len(preferred_prompt), [1] * len(nonpreferred_prompt)
         
@@ -53,6 +54,8 @@ class DLoader(Dataset):
             'preferred_prompt': torch.tensor(preferred_prompt, dtype=torch.long),
             'nonpreferred_prompt': torch.tensor(nonpreferred_prompt, dtype=torch.long),
             'style_id': torch.tensor(style_id, dtype=torch.long),
+            'prompt': prompt,
+            'preferred_response': preferred_response, 
         }
         return batch
 

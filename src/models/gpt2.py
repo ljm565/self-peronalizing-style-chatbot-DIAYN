@@ -51,3 +51,20 @@ class GPT2(nn.Module):
         predictions = [tokenizer.decode(pred.detach().cpu().tolist()) for pred in preds]
 
         return predictions, loss
+    
+
+    def inference(self, prompt, tokenizer, max_len, device):
+        # Prompt setup
+        prompt_token = [tokenizer.cls_token_id] + tokenizer.encode(prompt) + [tokenizer.sep_token_id]
+        prompt_l = len(prompt_token)
+        prompt_token = torch.tensor(prompt_token, dtype=torch.long).unsqueeze(0).to(device)
+
+        while prompt_token.size(1) < max_len:
+            output = self.forward(prompt_token)
+            prompt_token = torch.cat((prompt_token, torch.argmax(output[:, -1], dim=-1).unsqueeze(1)), dim=1)
+            if prompt_token[0, -1] == tokenizer.eos_token_id:
+                break
+
+        response = tokenizer.decode(prompt_token[0].tolist()[prompt_l:])
+        return response
+

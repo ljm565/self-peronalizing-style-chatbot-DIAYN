@@ -1,20 +1,19 @@
 import gc
 import time
-import math
 import random
 
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from torch import distributed as dist
 
-from tools import TrainingLogger
 from tools.tokenizers import *
+from tools import TrainingLogger, Evaluator
 from trainer.loss import DPOLoss
 from trainer.build import get_model, get_data_loader, get_tokenizers
 from utils import RANK, LOGGER, colorstr, init_seeds
 from utils.filesys_utils import *
 from utils.training_utils import *
+from utils.func_utils import print_samples
 
 
 
@@ -30,7 +29,7 @@ class DPOTrainer:
         ):
         init_seeds(config.seed + 1 + RANK, config.deterministic)
 
-        # init
+        # Init
         self.mode = mode
         self.is_training_mode = self.mode in ['train', 'resume']
         self.device = torch.device(device)
@@ -42,26 +41,27 @@ class DPOTrainer:
             self.save_dir = make_project_dir(self.config, self.is_rank_zero)
             self.wdir = self.save_dir / 'weights'
 
-        # path, data params
+        # Path, data params
         self.config.is_rank_zero = self.is_rank_zero
         self.resume_path = resume_path
         self.max_len = self.config.max_len
-        self.metrics = self.config.metrics
+        self.train_metrics, self.val_metrics = self.config.train_metrics, self.config.val_metrics
 
-        # save the yaml config
+        # Save the yaml config
         if self.is_rank_zero and self.is_training_mode:
-            self.wdir.mkdir(parents=True, exist_ok=True)  # make dir
+            self.wdir.mkdir(parents=True, exist_ok=True)  # Make dir
             self.config.save_dir = str(self.save_dir)
-            yaml_save(self.save_dir / 'args.yaml', self.config)  # save run args
+            yaml_save(self.save_dir / 'args.yaml', self.config)  # Save run args
 
-        # init tokenizer, model, dataset, dataloader, etc.
+        # Init tokenizer, model, dataset, dataloader, etc.
         self.modes = ['train', 'validation'] if self.is_training_mode else ['train', 'validation', 'test']
         self.tokenizer = get_tokenizers(self.config)
         self.dataloaders = get_data_loader(self.config, self.tokenizer, self.modes, self.is_ddp)
         self.model, self.ref_model = self._init_model(self.config, self.tokenizer, self.mode)
         self.training_logger = TrainingLogger(self.config, self.is_training_mode)
+        self.evaluator = Evaluator(self.tokenizer)
 
-        # init criterion, optimizer, etc.
+        # Init criterion, optimizer, etc.
         self.epochs = self.config.epochs
         self.criterion = DPOLoss(self.config.beta)
         if self.is_training_mode:
@@ -133,19 +133,9 @@ class DPOTrainer:
                     if self.is_ddp:
                         dist.barrier()
             
-            # clears GPU vRAM at end of epoch, can help with out of memory errors
+            # Clears GPU vRAM at end of epoch, can help with out of memory errors
             torch.cuda.empty_cache()
             gc.collect()
-
-            # Early Stopping
-            if self.is_ddp:  # if DDP training
-                broadcast_list = [self.stop if self.is_rank_zero else None]
-                dist.broadcast_object_list(broadcast_list, 0)  # broadcast 'stop' to all ranks
-                if not self.is_rank_zero:
-                    self.stop = broadcast_list[0]
-            
-            if self.stop:
-                break  # must break all DDP ranks
 
             if self.is_rank_zero:
                 LOGGER.info(f"\nepoch {epoch+1} time: {time.time() - start} s\n\n\n")
@@ -169,7 +159,7 @@ class DPOTrainer:
         if self.is_ddp:
             train_loader.sampler.set_epoch(epoch)
 
-        # init progress bar
+        # Init progress bar
         if RANK in (-1, 0):
             logging_header = ['DPO Loss', 'Preferred log prob.', 'Non-preferred log prob.', 'Rewards', 'Reward margin']
             pbar = init_progress_bar(train_loader, self.is_rank_zero, logging_header, nb)
@@ -184,7 +174,7 @@ class DPOTrainer:
             model_preferred_logits, model_nonpreferred_logits = self.model(preferred_prompt), self.model(nonpreferred_prompt)
             ref_preferred_logits, ref_nonpreferred_logits = self.ref_model(preferred_prompt), self.ref_model(nonpreferred_prompt)
             
-            # masked label training
+            # DPO alignment training
             loss, preferred_log_prob, nonpreferred_log_prob, reward_acc, reward_margins = self.criterion(
                 preferred_token=preferred_prompt,
                 nonpreferred_token=nonpreferred_prompt,
@@ -204,10 +194,10 @@ class DPOTrainer:
                     self.train_cur_step,
                     batch_size, 
                     **{'train_loss': loss.item(),
-                       'prefereed_log_prob': preferred_log_prob.item(),
-                       'non_preferred_log_prob': nonpreferred_log_prob.item(),
-                       'reward': reward_acc.item(),
-                       'reward_margin': reward_margins.item()},
+                       'tr_preferred_log_prob': preferred_log_prob.item(),
+                       'tr_non_preferred_log_prob': nonpreferred_log_prob.item(),
+                       'tr_reward': reward_acc.item(),
+                       'tr_reward_margin': reward_margins.item()},
                 )
                 loss_log = [loss.item(), preferred_log_prob.item(), nonpreferred_log_prob.item(), reward_acc.item(), reward_margins.item()]
                 msg = tuple([f'{epoch + 1}/{self.epochs}'] + loss_log)
@@ -220,70 +210,63 @@ class DPOTrainer:
             epoch: int,
             is_training_now=True
         ):
-        def _init_log_data_for_vis():
-            data4vis = {'trg': [], 'pred': []}
-            return data4vis
-
-        def _append_data_for_vis(**kwargs):
-            for k, v in kwargs.items():
-                if isinstance(v, list):
-                    self.data4vis[k].extend(v)
-                else: 
-                    self.data4vis[k].append(v)
+        self.model.eval()
+        self.ref_model.eval()
 
         with torch.no_grad():
             if self.is_rank_zero:
-                if not is_training_now:
-                    self.data4vis = _init_log_data_for_vis()
-
                 val_loader = self.dataloaders[phase]
                 nb = len(val_loader)
-                logging_header = ['CE Loss'] + self.config.metrics
+                logging_header = ['DPO Loss'] + self.val_metrics
                 pbar = init_progress_bar(val_loader, self.is_rank_zero, logging_header, nb)
 
-                self.model.eval()
+            
+                for i, batch in pbar:
+                    preferred_prompt, nonpreferred_prompt, style_id = batch['preferred_prompt'], batch['nonpreferred_prompt'], batch['style_id']
+                    batch_size = style_id.size(0)
+                    preferred_prompt, nonpreferred_prompt, style_id = preferred_prompt.to(self.device), nonpreferred_prompt.to(self.device), style_id.to(self.device)
 
-                for i, (x, y, fs, fsl) in pbar:
-                    batch_size = x.size(0)
-                    x, y, fs = x.to(self.device), y.to(self.device), fs.to(self.device)
 
-                    targets4metrics = [self.tokenizer.decode(t.tolist()) for t in x]
-
-                    model = self.model.module if self.is_ddp else self.model
-                    predictions, loss = model.batch_inference(
-                        src=x,
-                        start_tokens=(fs, fsl),
-                        max_len=self.max_len,
-                        tokenizer=self.tokenizer,
-                        loss_func=self.criterion,
-                        target=y
+                    model_preferred_logits, model_nonpreferred_logits = self.model(preferred_prompt), self.model(nonpreferred_prompt)
+                    ref_preferred_logits, ref_nonpreferred_logits = self.ref_model(preferred_prompt), self.ref_model(nonpreferred_prompt)
+                    
+                    # DPO inference
+                    loss, preferred_log_prob, nonpreferred_log_prob, reward_acc, reward_margins = self.criterion(
+                        preferred_token=preferred_prompt,
+                        nonpreferred_token=nonpreferred_prompt,
+                        model_preferred_logits=model_preferred_logits,
+                        model_nonpreferred_logits=model_nonpreferred_logits,
+                        ref_preferred_logits=ref_preferred_logits,
+                        ref_nonpreferred_logits=ref_nonpreferred_logits,
                     )
-                
-                    metric_results = self.metric_evaluation(loss, predictions, targets4metrics)
 
+                    # Inference and calculate metrics
+                    model = self.model.module if self.is_ddp else self.model
+                    response_preds = [model.inference(prompt, self.tokenizer, self.max_len, self.device) for prompt in batch['prompt']]
+                    response_gts = [response for response in batch['preferred_response']]
+                    metric_results = self.metric_evaluation(response_preds, response_gts)
+                    
+                    # Logging
                     self.training_logger.update(
                         phase, 
-                        epoch, 
-                        self.train_cur_step if is_training_now else 0, 
+                        epoch + 1,
+                        self.train_cur_step,
                         batch_size, 
-                        **{'validation_loss': loss.item()},
+                        **{'validation_loss': loss.item(),
+                           'vl_preferred_log_prob': preferred_log_prob.item(),
+                           'vl_non_preferred_log_prob': nonpreferred_log_prob.item(),
+                           'vl_reward': reward_acc.item(),
+                           'vl_reward_margin': reward_margins.item()},
                         **metric_results
                     )
 
-                    # logging
-                    loss_log = [loss.item()]
-                    msg = tuple([f'{epoch+1}/{self.epochs}'] + loss_log + [metric_results[k] for k in self.metrics])
-                    pbar.set_description(('%15s' + '%15.4g' * (len(loss_log) + len(self.metrics))) % msg)
+                    loss_log = [loss.item(), preferred_log_prob.item(), nonpreferred_log_prob.item(), reward_acc.item(), reward_margins.item()]
+                    msg = tuple([f'{epoch+1}/{self.epochs}'] + loss_log + [metric_results[k] for k in self.val_metrics if k in metric_results])
+                    pbar.set_description(('%25s' + '%25.4g' * (len(loss_log) + len(self.train_metrics))) % msg)
 
-                    ids = random.sample(range(batch_size), min(self.config.prediction_print_n, batch_size))
-                    for id in ids:
-                        print_samples(targets4metrics[id], predictions[id])
+                    for gt, pred in zip(response_gts, response_preds):
+                        print_samples(gt, pred)
 
-                    if not is_training_now:
-                        _append_data_for_vis(
-                            **{'trg': targets4metrics,
-                               'pred': predictions}
-                        )
 
                 # upadate logs and save model
                 self.training_logger.update_phase_end(phase, printing=True)
@@ -291,17 +274,11 @@ class DPOTrainer:
                     self.training_logger.save_model(self.wdir, model)
                     self.training_logger.save_logs(self.save_dir)
 
-                    high_fitness = self.training_logger.model_manager.best_higher
-                    low_fitness = self.training_logger.model_manager.best_lower
-                    self.stop = self.stopper(epoch + 1, high=high_fitness, low=low_fitness)
-
     
-    def metric_evaluation(self, loss, response_pred, response_gt):
-        metric_results = {k: 0 for k in self.metrics}
-        for m in self.metrics:
-            if m == 'ppl':
-                metric_results[m] = self.evaluator.cal_ppl(loss.item())
-            elif m == 'bleu2':
+    def metric_evaluation(self, response_pred, response_gt):
+        metric_results = {k: 0 for k in self.val_metrics}
+        for m in self.val_metrics:
+            if m == 'bleu2':
                 metric_results[m] = self.evaluator.cal_bleu_score(response_pred, response_gt, n=2)
             elif m == 'bleu4':
                 metric_results[m] = self.evaluator.cal_bleu_score(response_pred, response_gt, n=4)
@@ -309,9 +286,8 @@ class DPOTrainer:
                 metric_results[m] = self.evaluator.cal_nist_score(response_pred, response_gt, n=2)
             elif m == 'nist4':
                 metric_results[m] = self.evaluator.cal_nist_score(response_pred, response_gt, n=4)
-            else:
-                LOGGER.warning(f'{colorstr("red", "Invalid key")}: {m}')
-        
+
+        metric_results = {key: value for key, value in metric_results.items() if value != 0}
         return metric_results
     
     

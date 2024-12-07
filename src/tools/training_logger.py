@@ -13,7 +13,7 @@ class TrainingLogger:
     def __init__(self, config, training=True):
         self.training = training
         self.log_data = {'step': [], 'epoch': []}
-        self.log_keys = config.common + config.metrics
+        self.log_keys = config.common + config.train_metrics + config.val_metrics
         self.log_data.update({k: [] for k in self.log_keys})
         self.train_batch_sizes, self.val_batch_sizes = [], []
         self.is_rank_zero = config.is_rank_zero
@@ -90,6 +90,8 @@ class TrainingLogger:
                     value_sum, reduce_batch_sizes = self.nan_value_filtering(v[-1], self.val_batch_sizes)
                     v[-1] = value_sum / (sum(self.val_batch_sizes) - reduce_batch_sizes)
                     self.validation_epoch_result[k] = v[-1]
+                    if self.training and self.is_rank_zero:
+                        self._update_tensorboard(phase, self.log_data['step'][-1], k, v[-1])
             self.val_batch_sizes = []
             
         if printing:
