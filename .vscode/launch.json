@@ -9,7 +9,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/src/run/train.py",
-            "args": ["--config", "config/train_config.yaml", "--mode", "train"],
+            "args": ["--config", "config/train_config.yaml", "--mode", "resume", "--resume_model_dir", "outputs/dailydialog"],
             "console": "integratedTerminal",
             "justMyCode": true
         }

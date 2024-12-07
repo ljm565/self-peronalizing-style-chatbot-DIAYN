@@ -14,7 +14,7 @@ def one_cycle(y1=0.0, y2=1.0, steps=100):
 def init_progress_bar(dloader, is_rank_zero, loss_names, nb):
     if is_rank_zero:
         header = tuple(['Epoch'] + loss_names)
-        LOGGER.info(('\n' + '%15s' * (1 + len(loss_names))) % header)
+        LOGGER.info(('\n' + '%25s' * (1 + len(loss_names))) % header)
         pbar = TQDM(enumerate(dloader), total=nb)
     else:
         pbar = enumerate(dloader)

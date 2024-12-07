@@ -3,11 +3,11 @@ seed: 0
 deterministic: True
 
 # environment config
-device: [1]     # examples: [0], [0,1], [1,2,3], cpu, mps... 
+device: [0]     # examples: [0], [0,1], [1,2,3], cpu, mps... 
 
 # project config
 project: outputs/gpt2
-name: style_dpo_01
+name: vanilla_dpo
 
 # model config
 pretrained_model: gpt2
@@ -18,7 +18,11 @@ workers: 0                      # Don't worry to set worker. The number of worke
 data_dir: data/dpo_data
 
 # train config
-batch_size: 60
+batch_size: 10
 epochs: 3
 lr0: 1e-5
 beta: 0.1
+
+# logging config
+common: ['train_loss', 'validation_loss']
+metrics: ['prefereed_log_prob', 'non_preferred_log_prob', 'reward', 'reward_margin']   # You can add more metrics after implements metric validation codes

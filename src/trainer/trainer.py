@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch import distributed as dist
 
+from tools import TrainingLogger
 from tools.tokenizers import *
 from trainer.loss import DPOLoss
 from trainer.build import get_model, get_data_loader, get_tokenizers
@@ -45,19 +46,21 @@ class DPOTrainer:
         self.config.is_rank_zero = self.is_rank_zero
         self.resume_path = resume_path
         self.max_len = self.config.max_len
-
-        # init tokenizer, model, dataset, dataloader, etc.
-        self.modes = ['train', 'validation'] if self.is_training_mode else ['train', 'validation', 'test']
-        self.tokenizer = get_tokenizers(self.config)
-        self.dataloaders = get_data_loader(self.config, self.tokenizer, self.modes, self.is_ddp)
-        self.model, self.ref_model = self._init_model(self.config, self.tokenizer, self.mode)
+        self.metrics = self.config.metrics
 
         # save the yaml config
         if self.is_rank_zero and self.is_training_mode:
             self.wdir.mkdir(parents=True, exist_ok=True)  # make dir
             self.config.save_dir = str(self.save_dir)
             yaml_save(self.save_dir / 'args.yaml', self.config)  # save run args
-        
+
+        # init tokenizer, model, dataset, dataloader, etc.
+        self.modes = ['train', 'validation'] if self.is_training_mode else ['train', 'validation', 'test']
+        self.tokenizer = get_tokenizers(self.config)
+        self.dataloaders = get_data_loader(self.config, self.tokenizer, self.modes, self.is_ddp)
+        self.model, self.ref_model = self._init_model(self.config, self.tokenizer, self.mode)
+        self.training_logger = TrainingLogger(self.config, self.is_training_mode)
+
         # init criterion, optimizer, etc.
         self.epochs = self.config.epochs
         self.criterion = DPOLoss(self.config.beta)
@@ -66,7 +69,7 @@ class DPOTrainer:
 
 
     def _init_model(self, config, tokenizer, mode):
-        def _resume_model(resume_path, device, is_rank_zero):
+        def _resume_model(model, resume_path, device, is_rank_zero):
             try:
                 checkpoints = torch.load(resume_path, map_location=device)
             except RuntimeError:
@@ -87,8 +90,8 @@ class DPOTrainer:
 
         # resume model
         if do_resume:
-            model = _resume_model(self.resume_path, self.device, config.is_rank_zero)
-            ref_model = _resume_model(self.resume_path, self.device, config.is_rank_zero)
+            model = _resume_model(model, self.resume_path, self.device, config.is_rank_zero)
+            ref_model = _resume_model(ref_model, self.resume_path, self.device, config.is_rank_zero)
 
         # init ddp
         if self.is_ddp:
@@ -172,6 +175,7 @@ class DPOTrainer:
             pbar = init_progress_bar(train_loader, self.is_rank_zero, logging_header, nb)
 
         for i, batch in pbar:
+            self.train_cur_step += 1
             preferred_prompt, nonpreferred_prompt, style_id = batch['preferred_prompt'], batch['nonpreferred_prompt'], batch['style_id']
             batch_size = style_id.size(0)
             preferred_prompt, nonpreferred_prompt, style_id = preferred_prompt.to(self.device), nonpreferred_prompt.to(self.device), style_id.to(self.device)
@@ -185,7 +189,7 @@ class DPOTrainer:
                 preferred_token=preferred_prompt,
                 nonpreferred_token=nonpreferred_prompt,
                 model_preferred_logits=model_preferred_logits,
-                model_pnonreferred_logits=model_nonpreferred_logits,
+                model_nonpreferred_logits=model_nonpreferred_logits,
                 ref_preferred_logits=ref_preferred_logits,
                 ref_nonpreferred_logits=ref_nonpreferred_logits,
             )
@@ -194,9 +198,20 @@ class DPOTrainer:
             self.optimizer.step()
 
             if self.is_rank_zero:
+                self.training_logger.update(
+                    phase, 
+                    epoch + 1,
+                    self.train_cur_step,
+                    batch_size, 
+                    **{'train_loss': loss.item(),
+                       'prefereed_log_prob': preferred_log_prob.item(),
+                       'non_preferred_log_prob': nonpreferred_log_prob.item(),
+                       'reward': reward_acc.item(),
+                       'reward_margin': reward_margins.item()},
+                )
                 loss_log = [loss.item(), preferred_log_prob.item(), nonpreferred_log_prob.item(), reward_acc.item(), reward_margins.item()]
                 msg = tuple([f'{epoch + 1}/{self.epochs}'] + loss_log)
-                pbar.set_description(('%15s' * 1 + '%15.4g' * len(loss_log)) % msg)
+                pbar.set_description(('%25s' * 1 + '%25.4g' * len(loss_log)) % msg)
             
         
     def epoch_validate(
