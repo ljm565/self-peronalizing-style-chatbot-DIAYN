@@ -167,8 +167,11 @@ class DPOTrainer:
         for i, batch in pbar:
             self.train_cur_step += 1
             preferred_prompt, nonpreferred_prompt, style_id = batch['preferred_prompt'], batch['nonpreferred_prompt'], batch['style_id']
+            preferred_loss_mask, nonpreferred_loss_mask = batch['preferred_loss_mask'], batch['nonpreferred_loss_mask']
             batch_size = style_id.size(0)
+            
             preferred_prompt, nonpreferred_prompt, style_id = preferred_prompt.to(self.device), nonpreferred_prompt.to(self.device), style_id.to(self.device)
+            preferred_loss_mask, nonpreferred_loss_mask = preferred_loss_mask.to(self.device), nonpreferred_loss_mask.to(self.device)
             
             self.optimizer.zero_grad()
             model_preferred_logits, model_nonpreferred_logits = self.model(preferred_prompt), self.model(nonpreferred_prompt)
@@ -182,6 +185,8 @@ class DPOTrainer:
                 model_nonpreferred_logits=model_nonpreferred_logits,
                 ref_preferred_logits=ref_preferred_logits,
                 ref_nonpreferred_logits=ref_nonpreferred_logits,
+                preferred_loss_mask=preferred_loss_mask,
+                nonpreferred_loss_mask=nonpreferred_loss_mask,
             )
             
             loss.backward()
@@ -223,9 +228,11 @@ class DPOTrainer:
             
                 for i, batch in pbar:
                     preferred_prompt, nonpreferred_prompt, style_id = batch['preferred_prompt'], batch['nonpreferred_prompt'], batch['style_id']
+                    preferred_loss_mask, nonpreferred_loss_mask = batch['preferred_loss_mask'], batch['nonpreferred_loss_mask']
                     batch_size = style_id.size(0)
+                    
                     preferred_prompt, nonpreferred_prompt, style_id = preferred_prompt.to(self.device), nonpreferred_prompt.to(self.device), style_id.to(self.device)
-
+                    preferred_loss_mask, nonpreferred_loss_mask = preferred_loss_mask.to(self.device), nonpreferred_loss_mask.to(self.device)
 
                     model_preferred_logits, model_nonpreferred_logits = self.model(preferred_prompt), self.model(nonpreferred_prompt)
                     ref_preferred_logits, ref_nonpreferred_logits = self.ref_model(preferred_prompt), self.ref_model(nonpreferred_prompt)
@@ -238,6 +245,8 @@ class DPOTrainer:
                         model_nonpreferred_logits=model_nonpreferred_logits,
                         ref_preferred_logits=ref_preferred_logits,
                         ref_nonpreferred_logits=ref_nonpreferred_logits,
+                        preferred_loss_mask=preferred_loss_mask,
+                        nonpreferred_loss_mask=nonpreferred_loss_mask,
                     )
 
                     # Inference and calculate metrics

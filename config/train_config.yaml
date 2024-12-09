@@ -7,7 +7,7 @@ device: [0]     # examples: [0], [0,1], [1,2,3], cpu, mps...
 
 # project config
 project: outputs/gpt2
-name: vanilla_dpo
+name: vanilla_dpo2
 
 # model config
 pretrained_model: gpt2
@@ -19,9 +19,9 @@ data_dir: data/dpo_data
 
 # train config
 batch_size: 10
-epochs: 10
+epochs: 30
 lr0: 1e-5
-beta: 0.1
+beta: 0.5
 
 # logging config
 common: ['train_loss', 'validation_loss']

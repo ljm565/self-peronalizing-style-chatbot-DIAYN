@@ -9,12 +9,12 @@ class ModelManager:
             'vl_non_preferred_log_prob': 0.3
         }
         self.higher_candidates_weights = {
-            'vl_preferrsed_log_prob': 0.2,
-            'vl_reward': 0.2,
-            'vl_reward_margin': 0.2,
-            'bleu2': 0.0,
+            'vl_preferrsed_log_prob': 0,
+            'vl_reward': 0,
+            'vl_reward_margin': 0,
+            'bleu2': 0.2,
             'bleu4': 0.2,
-            'nist2': 0.0,
+            'nist2': 0.2,
             'nist4': 0.2,
         }
 
