@@ -6,7 +6,7 @@ sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 
 import torch
 
-from trainer import DPOTrainer
+from trainer import DPOTrainer, SFTTrainer
 from utils import colorstr
 from utils.training_utils import choose_proper_resume_model
 
@@ -46,12 +46,20 @@ def single_gpu_train(args, config):
     else:
         device = torch.device('cpu') if config.device == 'cpu' else torch.device(f'cuda:{config.device[0]}')
     
-    trainer = DPOTrainer(
-        config, 
-        args.mode, 
-        device, 
-        resume_path=choose_proper_resume_model(args.resume_model_dir, args.load_model_type) if args.mode == 'resume' else None
-    )
+    if config.style_training and config.style_train_mode == 'dpo':
+        trainer = DPOTrainer(
+            config, 
+            args.mode, 
+            device, 
+            resume_path=choose_proper_resume_model(args.resume_model_dir, args.load_model_type) if args.mode == 'resume' else None
+        )
+    elif config.style_training and config.style_train_mode == 'sft':
+        trainer = SFTTrainer(
+            config, 
+            args.mode, 
+            device, 
+            resume_path=choose_proper_resume_model(args.resume_model_dir, args.load_model_type) if args.mode == 'resume' else None
+        )
 
     if args.mode in ['train', 'resume']:
         trainer.do_train()
@@ -62,13 +70,22 @@ def multi_gpu_train(gpu, ngpus_per_node, config, args):
     torch.distributed.init_process_group(backend='nccl', init_method=f'tcp://127.0.0.1:{args.port}', world_size=ngpus_per_node, rank=gpu)
     torch.cuda.set_device(gpu)
     torch.distributed.barrier()
-    trainer = DPOTrainer(
-        config,
-        args.mode,
-        gpu,
-        is_ddp=True,
-        resume_path=choose_proper_resume_model(args.resume_model_dir, args.load_model_type) if args.mode == 'resume' else None
-    )
+    if config.style_training and config.style_train_mode == 'dpo':
+        trainer = DPOTrainer(
+            config,
+            args.mode,
+            gpu,
+            is_ddp=True,
+            resume_path=choose_proper_resume_model(args.resume_model_dir, args.load_model_type) if args.mode == 'resume' else None
+        )
+    elif config.style_training and config.style_train_mode == 'sft':
+        trainer = SFTTrainer(
+            config,
+            args.mode,
+            gpu,
+            is_ddp=True,
+            resume_path=choose_proper_resume_model(args.resume_model_dir, args.load_model_type) if args.mode == 'resume' else None
+        )
 
     if args.mode in ['train', 'resume']:
         trainer.do_train()
