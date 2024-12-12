@@ -1,1 +1,1 @@
-from .trainer import DPOTrainer
+from .trainer import DPOTrainer, SFTTrainer

@@ -41,14 +41,14 @@ def validation(args, config):
     else:
         device = torch.device('cpu') if config.device == 'cpu' else torch.device(f'cuda:{config.device[0]}')
     
-    if config.style_training and config.style_train_mode == 'dpo':
+    if config.style_train_mode in ['dpo', 'diayn']:
         trainer = DPOTrainer(
             config, 
             'validation', 
             device, 
             resume_path=choose_proper_resume_model(args.resume_model_dir, args.load_model_type) if args.resume_model_dir else None
         )
-    elif config.style_training and config.style_train_mode == 'sft':
+    else:
         trainer = SFTTrainer(
             config, 
             'validation', 

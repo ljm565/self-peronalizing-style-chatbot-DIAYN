@@ -1,0 +1,31 @@
+# base
+seed: 0
+deterministic: True
+
+# environment config
+device: [0]     # examples: [0], [0,1], [1,2,3], cpu, mps... 
+
+# project config
+project: outputs/gpt2
+name: vanilla_dpo_01
+
+# model config
+pretrained_model: gpt2
+max_len: 128
+style_num: 3
+style_train_mode: dpo
+
+# data config
+workers: 0                      # Don't worry to set worker. The number of workers will be set automatically according to the batch size.
+data_dir: data/dpo_data
+
+# train config
+batch_size: 10
+epochs: 30
+lr0: 1e-5
+beta: 0.5
+
+# logging config
+common: ['train_loss', 'validation_loss']
+train_metrics: ['tr_prefereed_log_prob', 'tr_non_preferred_log_prob', 'tr_reward', 'tr_reward_margin', 'intrinsic_reward']
+val_metrics: ['vl_preferred_log_prob', 'vl_non_preferred_log_prob', 'vl_reward', 'vl_reward_margin', 'bleu2', 'bleu4', 'nist2', 'nist4']

@@ -19,8 +19,8 @@ def get_tokenizers(config):
     return tokenizer
 
 
-def get_model(config, tokenizer, device):
-    model = GPT2(config, tokenizer).to(device)
+def get_model(config, tokenizer, device, style_train_mode='sft', is_training_mode=True):
+    model = GPT2(config, tokenizer, style_train_mode, is_training_mode).to(device)
     return model
 
 
@@ -28,7 +28,7 @@ def build_dataset(config, tokenizer, modes):
     dataset_dir = config.data_dir
     dataset_paths = {mode: os.path.join(dataset_dir, f'style_data.{mode}') if mode != 'validation' \
                                             else os.path.join(dataset_dir, 'style_data.val') for mode in modes}
-    dataset_dict = {s: DLoader(read_dataset(p), tokenizer, config) for s, p in dataset_paths.items()}
+    dataset_dict = {s: DLoader(read_dataset(p), tokenizer, config, s) for s, p in dataset_paths.items()}
     return dataset_dict
 
 

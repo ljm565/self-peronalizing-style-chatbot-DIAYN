@@ -5,11 +5,56 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "train",
+            "name": "sft_train",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/src/run/train.py",
-            "args": ["--config", "config/train_config.yaml", "--mode", "resume", "--resume_model_dir", "outputs/dailydialog"],
+            "args": ["--config", "config/train_sft_config.yaml", "--mode", "resume", "--resume_model_dir", "outputs/dailydialog"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "sft_validation",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/run/validation.py",
+            "args": ["-r", "outputs/gpt2/style_sft_01", "-d", "validation"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "dpo_train",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/run/train.py",
+            "args": ["--config", "config/train_dpo_config.yaml", "--mode", "resume", "--resume_model_dir", "outputs/gpt2/style_sft_01"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "dpo_validation",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/run/validation.py",
+            "args": ["-r", "outputs/gpt2/vanilla_dpo_01", "-d", "validation"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "diayn_dpo_train",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/run/train.py",
+            "args": ["--config", "config/train_diayn_config.yaml", "--mode", "resume", "--resume_model_dir", "outputs/gpt2/style_sft_01"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "diayn_dpo_validation",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/run/validation.py",
+            "args": ["-r", "outputs/gpt2/diayn_dpo_01", "-d", "validation"],
             "console": "integratedTerminal",
             "justMyCode": true
         }

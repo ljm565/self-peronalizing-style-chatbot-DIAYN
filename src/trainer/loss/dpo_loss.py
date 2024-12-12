@@ -51,7 +51,8 @@ class DPOLoss(nn.Module):
                 ref_preferred_logits, 
                 ref_nonpreferred_logits,
                 preferred_loss_mask=None,
-                nonpreferred_loss_mask=None):
+                nonpreferred_loss_mask=None,
+                intrinsic_reward=None):
         
         model_preferred_log_prob = self.get_log_prob(model_preferred_logits, preferred_token, preferred_loss_mask)
         model_nonpreferred_log_prob = self.get_log_prob(model_nonpreferred_logits, nonpreferred_token, nonpreferred_loss_mask)
@@ -65,5 +66,8 @@ class DPOLoss(nn.Module):
             ref_preferred_log_prob=ref_preferred_log_prob,
             ref_nonpreferred_log_prob=ref_nonpreferred_log_prob,
         )
+
+        if intrinsic_reward != None:
+            loss = loss - intrinsic_reward  # Minus operation due to negative value of intrinsic reward
 
         return loss, preferred_log_prob, nonpreferred_log_prob, reward_acc, reward_margins

@@ -14,6 +14,12 @@ class CustomGPT2Tokenizer:
         self.eos_token, self.eos_token_id = self.tokenizer.eos_token, self.tokenizer.eos_token_id
         self.unk_token, self.unk_token_id = self.tokenizer.unk_token, self.tokenizer.unk_token_id
 
+        # Add style tokens to vocab
+        tokens = ['[Style1]', '[Style2]', '[Style3]']
+        self.add_style_tokens(tokens)
+        self.style1_token, self.style2_token, self.style_token3 = tokens
+        self.style1_token_id, self.style2_token_id, self.style3_token_id = [self.tokenizer.convert_tokens_to_ids(token) for token in tokens]
+
         self.vocab_size = len(self.tokenizer)
 
 
@@ -27,3 +33,7 @@ class CustomGPT2Tokenizer:
 
     def decode(self, tok):
         return self.tokenizer.decode(tok)
+    
+
+    def add_style_tokens(self, tokens):
+        self.tokenizer.add_tokens(tokens, special_tokens=True)
