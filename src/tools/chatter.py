@@ -9,18 +9,24 @@ from tools.tokenizers import CustomGPT2Tokenizer
 
 
 class Chatter:
-    def __init__(self, args):
+    def __init__(self, config, device, resume_path=None):
         # Initialize config, tokenizer, and model
-        self.config = Config(args.config)
-        self.device = torch.device('cpu') if args.device == 'cpu' else torch.device(f'cuda:{args.device}')
+        self.config = config
+        self.device = torch.device('cpu') if device == 'cpu' else torch.device(f'cuda:{device}')
         self.tokenizer = CustomGPT2Tokenizer(self.config)
         self.config.vocab_size = self.tokenizer.vocab_size
-        self.lm_model = GPT2(self.config, self.tokenizer).to(self.device)
+        self.style_train_mode = self.config.style_train_mode
+        self.lm_model = GPT2(
+            self.config,
+            self.tokenizer,
+            self.style_train_mode,
+            is_training=False
+        ).to(self.device)
         self.max_len = self.config.max_len
 
         # Load trained model checkpoint
-        if args.resume_path:
-            checkpoints = torch.load(args.resume_path, map_location=self.device)
+        if resume_path != None:
+            checkpoints = torch.load(resume_path, map_location=self.device)
             self.lm_model.load_state_dict(checkpoints['model'])
             del checkpoints
             torch.cuda.empty_cache()
@@ -33,25 +39,17 @@ class Chatter:
         return query.unsqueeze(0)
 
 
-    def generate(self, query):
-        answer = []
-        query_tokens = self.make_prompt_input(query)
-        while 1:
-            output = self.lm_model(query_tokens)
-            pred_token = torch.argmax(output[:, -1], dim=-1)
-            answer.append(pred_token.item())
-            query_tokens = torch.cat((query_tokens, pred_token.unsqueeze(1)), dim=1)
+    def generate(self, prompt, style_id=-1):
+        if isinstance(style_id, int):
+            style_id = torch.tensor(style_id).to(self.device)
 
-            if pred_token == self.tokenizer.sep_token_id:
-                answer.pop()
-                break
-            elif pred_token == self.tokenizer.eos_token_id:
-                answer.pop()
-                break
-            
-            if query_tokens.size(1) >= self.max_len:
-                break
-            
-        answer = self.tokenizer.decode(answer)
-        return query, answer
+        response = self.lm_model.inference(
+            prompt=prompt,
+            max_len=self.max_len,
+            device=self.device,
+            style_id=style_id,
+            style_train_mode=self.style_train_mode,
+            include_end_token=False,
+        )
+        return prompt, response
     

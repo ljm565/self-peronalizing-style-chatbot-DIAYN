@@ -3,8 +3,6 @@ from transformers import GPT2LMHeadModel
 import torch
 import torch.nn as nn
 
-from utils import LOGGER, colorstr
-
 
 
 class GPT2(nn.Module):
@@ -55,15 +53,17 @@ class GPT2(nn.Module):
         return output.logits, output.hidden_states[-1]
     
 
-    def inference(self, prompt, max_len, device, style_id, style_train_mode='sft'):
+    def inference(self, prompt, max_len, device, style_id, style_train_mode='sft', include_end_token=True):
         # Prompt setup
         if style_id == 0:
             sep_token_id = self.tokenizer.style1_token_id
         elif style_id == 1:
             sep_token_id = self.tokenizer.style2_token_id
-        else:
+        elif style_id == 2:
             sep_token_id = self.tokenizer.style3_token_id
-
+        else:
+            sep_token_id = self.tokenizer.sep_token_id
+        
         prompt_token = [self.tokenizer.cls_token_id] + self.tokenizer.encode(prompt) + [sep_token_id]
         prompt_l = len(prompt_token)
         prompt_token = torch.tensor(prompt_token, dtype=torch.long).unsqueeze(0).to(device)
@@ -72,9 +72,9 @@ class GPT2(nn.Module):
         while prompt_token.size(1) < max_len:
             output, _ = self.forward(prompt_token, style_id if style_train_mode == 'diayn' else None)
             prompt_token = torch.cat((prompt_token, torch.argmax(output[:, -1], dim=-1).unsqueeze(1)), dim=1)
-            if prompt_token[0, -1] == self.tokenizer.eos_token_id:
+            if prompt_token[0, -1] == self.tokenizer.eos_token_id or prompt_token[0, -1] == sep_token_id:
                 break
-
-        response = self.tokenizer.decode(prompt_token[0].tolist()[prompt_l:])
+        
+        response = self.tokenizer.decode(prompt_token[0].tolist()[prompt_l:]) if include_end_token else self.tokenizer.decode(prompt_token[0].tolist()[prompt_l:-1])
         return response
 

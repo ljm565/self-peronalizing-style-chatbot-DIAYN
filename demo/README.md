@@ -8,8 +8,8 @@ There are several arguments for running `demo/server.py`:
 
 #### 1.2 Command
 ```bash
-# Execute GPT-2 server
-python3 demo/server.py -d cpu -c config/config.yaml -m checkpoint/model_epoch:83_step:15437_metric_best.pt
+# Execute GPT-2 based model server
+python3 demo/server.py --device 0 0 0 --config config/demo_config.yaml --resume_dir outputs/gpt2/diayn_dpo_01 outputs/gpt2/vanilla_dpo_01/ outputs/gpt2/style_sft_01/ --model_keys Diayn_DPO Vanilla_DPO SFT
 ```
 <br><br>
 

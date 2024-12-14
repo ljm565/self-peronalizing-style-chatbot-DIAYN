@@ -57,6 +57,15 @@
             "args": ["-r", "outputs/gpt2/diayn_dpo_01", "-d", "validation"],
             "console": "integratedTerminal",
             "justMyCode": true
+        },
+        {
+            "name": "server",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/demo/server.py",
+            "args": ["--device", "0", "--config", "config/demo_config.yaml", "--resume_dir", "outputs/gpt2/diayn_dpo_01", "--model_keys", "Diayn_DPO"],
+            "console": "integratedTerminal",
+            "justMyCode": true
         }
     ]
 }
