@@ -44,6 +44,11 @@ class PromptRequest(BaseModel):
     style: int
 
 
+class StyleRequest(BaseModel):
+    prompt: str
+    response: str
+
+
 @app.post("/gpt2")
 async def generate_response(request: PromptRequest):
     prompt = request.prompt.strip()
@@ -61,6 +66,25 @@ async def generate_response(request: PromptRequest):
         raise HTTPException(status_code=400, detail="Prompt is empty")
     
     return {"prompt": prompt, "response": response, 'key': args.model_keys}
+
+
+
+@app.post("/find_style")
+async def fin_style(request: StyleRequest):
+    prompt = request.prompt.strip()
+    response = request.response.strip()
+    
+    ppls = None
+    for chatter in chatters:
+        if chatter.style_train_mode == 'diayn':
+            ppls = [chatters[0].calculate_ppl(prompt, response, style_id=i) for i in range(3)]
+            break
+    
+    if ppls == None:
+        raise HTTPException(status_code=400, detail="There is no DIAYN-based trained model..")
+        
+    return {"ppls": ppls}
+
 
 
 if __name__ == "__main__":

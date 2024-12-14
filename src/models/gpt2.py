@@ -78,3 +78,26 @@ class GPT2(nn.Module):
         response = self.tokenizer.decode(prompt_token[0].tolist()[prompt_l:]) if include_end_token else self.tokenizer.decode(prompt_token[0].tolist()[prompt_l:-1])
         return response
 
+    
+    def calculate_logits(self, prompt, response, device, style_id, style_train_mode):
+        # Prompt setup
+        if style_id == 0:
+            sep_token_id = self.tokenizer.style1_token_id
+        elif style_id == 1:
+            sep_token_id = self.tokenizer.style2_token_id
+        elif style_id == 2:
+            sep_token_id = self.tokenizer.style3_token_id
+        else:
+            sep_token_id = self.tokenizer.sep_token_id
+        
+        prompt_token = [self.tokenizer.cls_token_id] + self.tokenizer.encode(prompt) + [sep_token_id]
+        response_token = self.tokenizer.encode(response) + [self.tokenizer.eos_token_id]
+        
+        input_ids = prompt_token + response_token
+        label = [-100] * len(prompt_token) + response_token
+        
+        input_ids, style_id = torch.tensor(input_ids, dtype=torch.long).unsqueeze(0).to(device), style_id.unsqueeze(0)
+        logits, _ = self.forward(input_ids, style_id if style_train_mode == 'diayn' else None)
+
+        return logits, torch.tensor(label, dtype=torch.long).unsqueeze(0).to(device)
+

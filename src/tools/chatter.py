@@ -1,7 +1,8 @@
 import gc
-from sconf import Config
+import numpy as np
 
 import torch
+import torch.nn as nn
 
 from models import GPT2
 from tools.tokenizers import CustomGPT2Tokenizer
@@ -23,6 +24,7 @@ class Chatter:
             is_training=False
         ).to(self.device)
         self.max_len = self.config.max_len
+        self.criterion = nn.CrossEntropyLoss(ignore_index=-100)
 
         # Load trained model checkpoint
         if resume_path != None:
@@ -53,3 +55,11 @@ class Chatter:
         )
         return prompt, response
     
+
+    def calculate_ppl(self, prompt, response, style_id=-1):
+        if isinstance(style_id, int):
+            style_id = torch.tensor(style_id).to(self.device)
+
+        logits, label = self.lm_model.calculate_logits(prompt, response, self.device, style_id, self.style_train_mode)
+        loss = self.criterion(logits[:, :-1, :].reshape(-1, logits.size(-1)), label[:, 1:].reshape(-1))
+        return np.exp(loss.item())
