@@ -38,19 +38,20 @@ if args.resume_dir != None:
 else:
     chatters = [Chatter(Config(args.config), args.device[0])]
 
-print(args.model_keys)
+
 class PromptRequest(BaseModel):
     prompt: str
-
+    style: int
 
 
 @app.post("/gpt2")
 async def generate_response(request: PromptRequest):
     prompt = request.prompt.strip()
+    style = int(request.style)
     if args.resume_dir == None:
         prompt, response = chatters[0].generate(prompt)
     else:
-        results = [chatter.generate(prompt, style_id=1) for chatter in chatters]
+        results = [chatter.generate(prompt, style_id=style) for chatter in chatters]
         prompt, response = [], []
         for result in results:
             prompt.append(result[0])
