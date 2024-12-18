@@ -136,5 +136,4 @@ The loss function is defined as follows:
     <!-- <img src="figs/alignment/dpoAndDiayn.jpg" width="100%"><br><br> -->
 
 
-<br><br><br>
 
