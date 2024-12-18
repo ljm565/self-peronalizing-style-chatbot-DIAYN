@@ -111,7 +111,7 @@ The DPO loss function is defined as follows:
     \beta \log \frac{\pi_{\theta}(y_w\mid x)}{\pi_\text{ref}(y_w\mid x)} \thinspace
     {- \beta \log \frac{\pi_{\theta}(y_l\mid x)}{\pi_\text{ref}(y_l\mid x)}}\right)\right]
     $$
-    
+
     <img src="figs/alignment/dpo.jpg" width="100%"><br><br>
 
 * DPO + DIAYN<br>
@@ -130,7 +130,6 @@ The loss function is defined as follows:
     L_\text{DPO}(\pi_{\theta}; \pi_\text{ref}) = -E_{(x, y_w, y_l)\sim D}\left[\log \sigma \left(
     \beta \log \frac{\pi_{\theta}(y_w\mid x)}{\pi_\text{ref}(y_w\mid x)} \thinspace
     {- \beta \log \frac{\pi_{\theta}(y_l\mid x)}{\pi_\text{ref}(y_l\mid x)}}\right)\right]
-    -E[logq_{\phi}(z|s)] + L_{Discriminator}
     $$
 
     <img src="figs/alignment/dpoAndDiayn.jpg" width="100%"><br><br>
