@@ -131,7 +131,44 @@ The loss function is defined as follows:
     {- \beta \log \frac{\pi_{\theta}(y_l\mid x)}{\pi_\text{ref}(y_l\mid x)}}\right)\right]-E[logq_{\phi}(z|s)] + L_{discriminator}
     ```
 
-    <img src="figs/alignment/dpoAndDiayn.jpg" width="100%"><br><br>
+    <img src="figs/alignment/dpoAndDiayn.jpg" width="100%"><br><br><br>
 
 
 
+## Results
+### 1. Quantitative Results
+This is the quantitative result for the validation set, and we can clearly see that the DPO method incorporating skills performs significantly better than the other cases.
+The reason for the BLEU-4 score being 0 is that the style data used for training has short length and the amount of training data is limited, making it realistically difficult to exactly match the golden response labels in the validation set.
+
+    
+| Models       | BLEU-2 | BLEU-4 | NIST-2 | NIST-4 | 
+|:-------------|-------:|:-------|:-------|:-------|
+| SFT          | 0.1165 | 0.0    | 1.1122 | 1.1122 |                  
+| Vanilla DPO  | 0.1199 | 0.0    | 1.0924 | 1.0924 |
+| DPO + DIAYN  | 0.1332 | 0.0    | 1.1767 | 1.1767 |
+
+* Train Loss<br>
+<img src="figs/results/train_loss.png" width="80%"><br><br>
+* DPO Rewards<br>
+<img src="figs/results/dpo_reward.png" width="80%"><br><br>
+* NIST History<br>
+<img src="figs/results/intrinsic_reward.png" width="80%"><br><br>
+
+
+### 2. Qualitative Results
+Here, this shows the results of the model for each style on the same question.
+The question is ”How can I manage my time more effectively during the day?”
+And the three model’s results are slightly different.
+Also, you can see that the tone of the responses from all three models aligns with the set styles.
+
+<img src="figs/results/inference_results.png" width="100%"><br><br>
+
+
+
+### 3. Real-world Scenario
+1. The chatbot identifies the user's style by asking the first three questions.
+2. The chatbot calculates logits by applying three style tokens to the questions it asked and the user's responses.
+3. It then adopts the style with the lowest average PPL (Perplexity) across the styles and applies it to generate subsequent responses.
+
+
+<img src="figs/results/demo-HD-1080p.gif" width="100%"><br><br>
