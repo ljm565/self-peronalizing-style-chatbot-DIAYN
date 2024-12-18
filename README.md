@@ -105,10 +105,11 @@ To briefly explain DPO, it stands for Direct Preference Optimization.
 Similar to RL, it starts by using a cloned reference model for training.
 As training progresses, the model being trained learns to have higher logit probabilities for preferred answers compared to the reference model, and lower logit probabilities for non-preferred answers compared to the reference model. 
 The DPO loss function is defined as follows:
-
-    $$L_\text{DPO}(\pi_{\theta}; \pi_\text{ref}) = -E_{(x, y_w, y_l)\sim D}\left[\log \sigma \left(
+    ```math
+    L_\text{DPO}(\pi_{\theta}; \pi_\text{ref}) = -E_{(x, y_w, y_l)\sim D}\left[\log \sigma \left(
     \beta \log \frac{\pi_{\theta}(y_w\mid x)}{\pi_\text{ref}(y_w\mid x)} \thinspace
-    {- \beta \log \frac{\pi_{\theta}(y_l\mid x)}{\pi_\text{ref}(y_l\mid x)}}\right)\right]$$
+    {- \beta \log \frac{\pi_{\theta}(y_l\mid x)}{\pi_\text{ref}(y_l\mid x)}}\right)\right]
+    ```
 
     <img src="figs/alignment/dpo.jpg" width="100%"><br><br>
 
@@ -124,13 +125,13 @@ And the discriminator returns the probabilities for the three styles through sof
 Based on these probabilities, I computed the intrinsic reward in the same way as described in the DIAYN paper.
 The loss function is defined as follows:
 
-    $$L_\text{DPO}(\pi_{\theta}; \pi_\text{ref}) = -E_{(x, y_w, y_l)\sim D}\left[\log \sigma \left(
+    ```math
+    L_\text{DPO}(\pi_{\theta}; \pi_\text{ref}) = -E_{(x, y_w, y_l)\sim D}\left[\log \sigma \left(
     \beta \log \frac{\pi_{\theta}(y_w\mid x)}{\pi_\text{ref}(y_w\mid x)} \thinspace
-    {- \beta \log \frac{\pi_{\theta}(y_l\mid x)}{\pi_\text{ref}(y_l\mid x)}}\right)\right]$$
+    {- \beta \log \frac{\pi_{\theta}(y_l\mid x)}{\pi_\text{ref}(y_l\mid x)}}\right)\right]-E[logq_{\phi}(z|s)] + L_{discriminator}
+    ```
 
     <img src="figs/alignment/dpoAndDiayn.jpg" width="100%"><br><br>
-
-* DPO + DIAYN<br>
 
 
 
