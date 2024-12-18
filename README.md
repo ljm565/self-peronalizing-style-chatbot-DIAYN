@@ -104,7 +104,7 @@ Here, red boxes represents non-preferred QA and Blue-like boxes represents prefe
 To briefly explain DPO, it stands for Direct Preference Optimization.
 Similar to RL, it starts by using a cloned reference model for training.
 As training progresses, the model being trained learns to have higher logit probabilities for preferred answers compared to the reference model, and lower logit probabilities for non-preferred answers compared to the reference model. 
-The DPO loss function is defined as follows:
+The DPO loss function is defined as follows:<br>
     $$
     L_\text{DPO}(\pi_{\theta}; \pi_\text{ref}) = -E_{(x, y_w, y_l)\sim D}\left[\log \sigma \left(
     \beta \log \frac{\pi_{\theta}(y_w\mid x)}{\pi_\text{ref}(y_w\mid x)} \thinspace
@@ -122,7 +122,7 @@ The reason I used the last hidden state here is that, in the DIAYN model, the re
 If I pass the sentence tokens directly, backpropagation wouldn't be possible, so I used the last hidden state of the model, which contains the embedded skill information.
 And the discriminator returns the probabilities for the three styles through softmax.
 Based on these probabilities, I computed the intrinsic reward in the same way as described in the DIAYN paper.
-The loss function is defined as follows:
+The loss function is defined as follows:<br>
     $$
     L_\text{DPO}(\pi_{\theta}; \pi_\text{ref}) = -E_{(x, y_w, y_l)\sim D}\left[\log \sigma \left(
     \beta \log \frac{\pi_{\theta}(y_w\mid x)}{\pi_\text{ref}(y_w\mid x)} \thinspace
