@@ -22,11 +22,21 @@ The model checkpoints were saved based on BLEU and NIST scores, and I evaluated 
 The training hyperparameters are detailed in the below.
 * Model: Pretrained GPT-2
 * Data: [DailyDialog](http://yanran.li/dailydialog) which is consists of everyday conversations and is structured as multi-turn exchanges.
+    | Train | Validation | Test |
+    |:-----:|:----------:|:----:|
+    |11,118 | 1,000      | 1,000|
 * Statistics
     | Total Dialogues | Avg. Turns per Dialogue | Avg. Tokens per Dialogue | Avg. Tokens per Utterance |
-    |:---------------:|:---------------:|:---------------:|:---------------:|
-    | 13,118          | 7.9             | 114,7           | 14.6            |
+    |:---------------:|:-----------------------:|:------------------------:|:-------------------------:|
+    | 13,118          | 7.9                     | 114,7                    | 14.6                      |
 
+* Evaluation Metrics: BLEU-2, BLEU-4, NIST-2, NIST-4 
+<br>I selected the model that achieved the best scores on the above metrics in the validation set.
+
+* Hyperparameters
+    | Steps | Batch size | LR0 | Warm up | User-turn Masking |
+    |:-------:|:-----------------------:|:------------------------:|:---------:|:---------:|
+    | 30,000          | 60                     | 1e-4       | 200      | After 15,000 steps|
 
 <br><br><br>
 
